@@ -14,7 +14,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h> // For defensive programming assertions
-#include <Windows.h>
+
+#ifdef _WIN32
+    #include <Windows.h> // For CRITICAL_SECTION on Windows
+#else
+    #include <pthread.h> // For pthread_mutex_t on POSIX (Linux, macOS)
+#endif
 
 
  /*=============================================================================
@@ -30,7 +35,12 @@ typedef struct {
 	cache_element* tail; // Tail of the list (Least Recently Used).
 
 	size_t current_size; // Current total size of all data in cache.
-	CRITICAL_SECTION mutex; // Mutex to protect all cache operations.
+
+	#ifdef _WIN32
+        CRITICAL_SECTION mutex; // Mutex for Windows
+    #else
+        pthread_mutex_t mutex;  // Mutex for POSIX
+    #endif
 } proxy_cache_t;
 
 /**
@@ -128,7 +138,12 @@ void cache_init() {
 	g_cache.head = NULL;
 	g_cache.tail = NULL;
 	g_cache.current_size = 0;
-	InitializeCriticalSection(&g_cache.mutex);
+
+	#ifdef _WIN32
+        InitializeCriticalSection(&g_cache.mutex);
+    #else
+        pthread_mutex_init(&g_cache.mutex, NULL);
+    #endif
 
 	g_cache.map = map_create(1024, 0.75f, NULL, NULL, free, free_cache_element);
 	if (g_cache.map == NULL) {
@@ -139,7 +154,11 @@ void cache_init() {
 
 
 void cache_destroy() {
-	EnterCriticalSection(&g_cache.mutex);
+	#ifdef _WIN32
+        EnterCriticalSection(&g_cache.mutex);
+    #else
+        pthread_mutex_lock(&g_cache.mutex);
+    #endif
 
 	// Destroying the map will call 'free' on all URL keys it contains.
 	map_destroy(g_cache.map);
@@ -150,8 +169,14 @@ void cache_destroy() {
 	g_cache.current_size = 0;
 	g_cache.map = NULL;
 
-	LeaveCriticalSection(&g_cache.mutex);
-	DeleteCriticalSection(&g_cache.mutex);	// Now, delete the synchronization object
+	// Now, delete the synchronization object
+	#ifdef _WIN32
+        LeaveCriticalSection(&g_cache.mutex);
+        DeleteCriticalSection(&g_cache.mutex);
+    #else
+        pthread_mutex_unlock(&g_cache.mutex);
+        pthread_mutex_destroy(&g_cache.mutex);
+    #endif
 }
 
 
@@ -159,7 +184,12 @@ void cache_destroy() {
 cache_element* cache_find(const char* url) {
 	if (!url)
 		return NULL;
-	EnterCriticalSection(&g_cache.mutex);
+	
+	#ifdef _WIN32
+        EnterCriticalSection(&g_cache.mutex);
+    #else
+        pthread_mutex_lock(&g_cache.mutex);
+    #endif
 
 	// 1. Find in map (O(1) average)
 	cache_element* element = (cache_element*)map_find(g_cache.map, url);
@@ -171,7 +201,11 @@ cache_element* cache_find(const char* url) {
 	}
 
 	// 3. Release lock and return
-	LeaveCriticalSection(&g_cache.mutex);
+    #ifdef _WIN32
+        LeaveCriticalSection(&g_cache.mutex);
+    #else
+        pthread_mutex_unlock(&g_cache.mutex);
+    #endif
 	return element;
 }
 
@@ -183,7 +217,11 @@ void cache_add(const char* url, const char* data, size_t length) {
 	}
 
 	// Acquire lock to modify the shared cache structure.
-	EnterCriticalSection(&g_cache.mutex);
+	#ifdef _WIN32
+        EnterCriticalSection(&g_cache.mutex);
+    #else
+        pthread_mutex_lock(&g_cache.mutex);
+    #endif
 
 	cache_element* existing_element = (cache_element*)map_find(g_cache.map, url);
 
@@ -205,7 +243,12 @@ void cache_add(const char* url, const char* data, size_t length) {
 		if (existing_element->data == NULL) {
 			// Severe issue: couldn't allocate. Remove the corrupt element.
 			map_erase(g_cache.map, existing_element->url);
-			LeaveCriticalSection(&g_cache.mutex);
+			// --- Unlock Mutex ---
+			#ifdef _WIN32
+				LeaveCriticalSection(&g_cache.mutex);
+			#else
+				pthread_mutex_unlock(&g_cache.mutex);
+			#endif
 			return;
 		}
 		memcpy(existing_element->data, data, length);
@@ -221,16 +264,19 @@ void cache_add(const char* url, const char* data, size_t length) {
 		while (g_cache.current_size + length > MAX_CACHE_SIZE) {
 			remove_lru_element_unlocked();
 		}
-
-		// 1. Allocate all memory *before* locking to minimize lock duration.
 		cache_element* new_element = calloc(1, sizeof(cache_element));
 
 		if (new_element == NULL) {
-			LeaveCriticalSection(&g_cache.mutex);
+			// --- Unlock Mutex ---
+			#ifdef _WIN32
+				LeaveCriticalSection(&g_cache.mutex);
+			#else
+				pthread_mutex_unlock(&g_cache.mutex);
+			#endif
 			return;
 		}
 
-		new_element->url = _strdup(url);
+		new_element->url = strdup(url);
 		new_element->data = malloc(length);
 
 		if (!new_element->url || !new_element->data) {
@@ -238,7 +284,12 @@ void cache_add(const char* url, const char* data, size_t length) {
 			free(new_element->url);
 			free(new_element->data);
 			free(new_element);
-			LeaveCriticalSection(&g_cache.mutex);
+			
+			#ifdef _WIN32
+				LeaveCriticalSection(&g_cache.mutex);
+			#else
+				pthread_mutex_unlock(&g_cache.mutex);
+			#endif
 			return;
 		}
 
@@ -251,6 +302,10 @@ void cache_add(const char* url, const char* data, size_t length) {
 		g_cache.current_size += length;
 	}
 
-	// Release lock
-	LeaveCriticalSection(&g_cache.mutex);
+	// --- Unlock Mutex ---
+    #ifdef _WIN32
+        LeaveCriticalSection(&g_cache.mutex);
+    #else
+        pthread_mutex_unlock(&g_cache.mutex);
+    #endif
 }
