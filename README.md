@@ -2,7 +2,6 @@
 
 ![Language](https://img.shields.io/badge/language-C-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 A thread-safe, high-performance, and generic Least Recently Used (LRU) Cache implemented in C. This project is built upon a generic hash map and is designed for applications requiring efficient memory management for frequently accessed data, such as a web proxy server.
 
